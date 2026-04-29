@@ -1,0 +1,27 @@
+[
+  {
+    "id": "Formulir",
+    "name": "Formulir Isian",
+    "isSystem": true
+  },
+  {
+    "id": "Paket Pendirian",
+    "name": "Paket Pendirian",
+    "isSystem": true
+  },
+  {
+    "id": "NIB 2025",
+    "name": "NIB 2025",
+    "isSystem": true
+  },
+  {
+    "id": "Lainnya",
+    "name": "Lainnya",
+    "isSystem": true
+  },
+  {
+    "id": "Persyaratan Jasa PPAT",
+    "name": "Persyaratan Jasa PPAT",
+    "isSystem": true
+  }
+]

@@ -1,0 +1,878 @@
+'use server'
+
+import fs from 'fs/promises';
+import path from 'path';
+import { revalidatePath } from 'next/cache';
+
+// Tentukan lokasi folder data (pastikan folder 'data' ada di root project)
+const DATA_DIR = path.join(process.cwd(), 'data');
+const PUBLIC_DIR = path.join(process.cwd(), 'public');
+const DRAFTS_DIR = path.join(PUBLIC_DIR, 'uploads', 'drafts');
+const DRAFTS_FILENAME = 'drafts.json';
+const ALLOWED_DRAFT_EXTENSIONS = ['.pdf', '.doc', '.docx'];
+const ALLOWED_DRAFT_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+
+async function ensureDraftsDirectory() {
+  await fs.mkdir(DRAFTS_DIR, { recursive: true });
+}
+
+// Helper untuk memastikan file ada
+async function ensureFile(filename, defaultData = []) {
+  const filePath = path.join(DATA_DIR, filename);
+  try {
+    await fs.access(filePath);
+  } catch {
+    // Jika error (file tidak ada), buat folder dan file baru
+    try {
+      await fs.mkdir(DATA_DIR, { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify(defaultData, null, 2));
+    } catch (err) {
+      console.error("Gagal membuat file:", err);
+    }
+  }
+  return filePath;
+}
+
+async function readJson(filePath) {
+  const fileContent = await fs.readFile(filePath, 'utf-8');
+  return JSON.parse(fileContent);
+}
+
+async function writeJson(filePath, data) {
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+}
+
+// --- FUNCTION UNTUK INVOICE ---
+
+export async function saveInvoice(invoiceData) {
+  const filePath = await ensureFile('invoices.json');
+
+  // Baca data lama
+  const invoices = await readJson(filePath);
+
+  // Tambah data baru (Generate ID simple pakai timestamp)
+  const newInvoice = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    ...invoiceData
+  };
+
+  invoices.push(newInvoice);
+
+  // Simpan balik ke file
+  await writeJson(filePath, invoices);
+
+  return { success: true, data: newInvoice };
+}
+
+export async function getInvoices() {
+  const filePath = await ensureFile('invoices.json');
+  return readJson(filePath);
+}
+
+// --- FUNCTION UNTUK KLIEN ---
+
+export async function getClients() {
+  const filePath = await ensureFile('clients.json');
+  return readJson(filePath);
+}
+
+// --- FUNCTION UNTUK SERAH TERIMA ---
+
+export async function saveSerahTerima(record) {
+  const filePath = await ensureFile('serah-terima.json');
+  const records = await readJson(filePath);
+
+  const newRecord = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    ...record,
+  };
+
+  records.push(newRecord);
+  await writeJson(filePath, records);
+
+  return { success: true, data: newRecord };
+}
+
+export async function getSerahTerimaRecords() {
+  const filePath = await ensureFile('serah-terima.json');
+  return readJson(filePath);
+}
+
+// --- FUNCTION UNTUK DAFTAR HADIR AKAD ---
+
+export async function saveDaftarHadir(record) {
+  const filePath = await ensureFile('daftar-hadir.json');
+  const records = await readJson(filePath);
+
+  const newRecord = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    ...record,
+  };
+
+  records.push(newRecord);
+  await writeJson(filePath, records);
+
+  return { success: true, data: newRecord };
+}
+
+export async function getDaftarHadirRecords() {
+  const filePath = await ensureFile('daftar-hadir.json');
+  return readJson(filePath);
+}
+
+// --- FUNCTION UNTUK COVER AKTA ---
+
+export async function saveCoverAkta(record) {
+  const filePath = await ensureFile('cover-akta.json');
+  const records = await readJson(filePath);
+
+  const newRecord = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    ...record,
+  };
+
+  records.push(newRecord);
+  await writeJson(filePath, records);
+
+  return { success: true, data: newRecord };
+}
+
+export async function getCoverAktaRecords() {
+  const filePath = await ensureFile('cover-akta.json');
+  return readJson(filePath);
+}
+
+// --- FUNCTION UNTUK LAPORAN BULANAN (DATA AKTA) ---
+
+const DEEDS_FILENAME = 'deeds.json';
+
+function normalizeParties(parties = []) {
+  if (!Array.isArray(parties)) return [];
+  return parties
+    .map((party) => ({
+      name: party?.name ?? '',
+      role: party?.role ?? '',
+    }))
+    .filter((party) => party.name.trim() !== '');
+}
+
+function derivePeriod(tanggalAkta, fallback = new Date()) {
+  const parsed = tanggalAkta ? new Date(tanggalAkta) : fallback;
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      month: fallback.getMonth() + 1,
+      year: fallback.getFullYear(),
+    };
+  }
+  return {
+    month: parsed.getMonth() + 1,
+    year: parsed.getFullYear(),
+  };
+}
+
+function normalizeDeedPayload(payload = {}) {
+  const now = new Date();
+  const {
+    bulanPelaporan,
+    tahunPelaporan,
+    tanggalAkta,
+    jenis = 'Notaris',
+    kategori = 'Akta',
+    detailPPAT = null,
+  } = payload;
+
+  const period = derivePeriod(tanggalAkta, now);
+  return {
+    jenis,
+    nomorAkta: payload.nomorAkta ?? '',
+    tanggalAkta: tanggalAkta ?? now.toISOString().slice(0, 10),
+    judulAkta: payload.judulAkta ?? payload.sifatAkta ?? '',
+    pihak: normalizeParties(payload.pihak),
+    detailPPAT:
+      jenis === 'PPAT' && detailPPAT
+        ? {
+          nop: detailPPAT.nop ?? '',
+          njop: detailPPAT.njop ?? '',
+          luasTanah: detailPPAT.luasTanah ?? '',
+          luasBangunan: detailPPAT.luasBangunan ?? '',
+          lokasiObjek: detailPPAT.lokasiObjek ?? '',
+          nilaiTransaksi: detailPPAT.nilaiTransaksi ?? '',
+          ssb: detailPPAT.ssb ?? '',
+          ssp: detailPPAT.ssp ?? '',
+        }
+        : null,
+    kategori: jenis === 'Notaris' ? kategori : null,
+    bulanPelaporan: bulanPelaporan ?? period.month,
+    tahunPelaporan: tahunPelaporan ?? period.year,
+  };
+}
+
+export async function getDeeds() {
+  const filePath = await ensureFile(DEEDS_FILENAME);
+  const fileContent = await fs.readFile(filePath, 'utf-8');
+  try {
+    return JSON.parse(fileContent);
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function createDeed(data) {
+  const filePath = await ensureFile(DEEDS_FILENAME);
+  const fileContent = await fs.readFile(filePath, 'utf-8');
+  const deeds = JSON.parse(fileContent);
+
+  const newDeed = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    ...data
+  };
+
+  deeds.push(newDeed);
+  await fs.writeFile(filePath, JSON.stringify(deeds, null, 2));
+  return { success: true, data: newDeed };
+}
+
+export async function updateDeed(id, data) {
+  const filePath = await ensureFile(DEEDS_FILENAME);
+  const fileContent = await fs.readFile(filePath, 'utf-8');
+  let deeds = JSON.parse(fileContent);
+
+  const index = deeds.findIndex(d => d.id === id);
+  if (index !== -1) {
+    deeds[index] = { ...deeds[index], ...data };
+    await fs.writeFile(filePath, JSON.stringify(deeds, null, 2));
+    return { success: true, data: deeds[index] };
+  }
+  return { success: false };
+}
+
+export async function deleteDeed(id) {
+  const filePath = await ensureFile(DEEDS_FILENAME);
+  const fileContent = await fs.readFile(filePath, 'utf-8');
+  let deeds = JSON.parse(fileContent);
+
+  deeds = deeds.filter(d => d.id !== id);
+  await fs.writeFile(filePath, JSON.stringify(deeds, null, 2));
+  return { success: true };
+}
+
+// --- FUNCTION UNTUK DRAFT AKTA ---
+
+function sanitizeFilename(name = '') {
+  return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+function buildDraftRecord({ title, category, filename, storedFilename }) {
+  const now = new Date().toISOString();
+  return {
+    id: Date.now().toString(),
+    title: title?.toString().trim() || 'Draft Tanpa Judul',
+    category: category === 'PPAT' ? 'PPAT' : 'Notaris',
+    filename: filename,
+    fileUrl: `/uploads/drafts/${storedFilename}`,
+    uploadDate: now,
+  };
+}
+
+export async function getDrafts(category) {
+  const filePath = await ensureFile(DRAFTS_FILENAME);
+  const drafts = await readJson(filePath);
+
+  const filtered = category
+    ? drafts.filter((draft) => draft.category === category)
+    : drafts;
+
+  return filtered.sort(
+    (a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime()
+  );
+}
+
+export async function uploadDraft(formData) {
+  const title = formData.get('title');
+  const category = formData.get('category');
+  const file = formData.get('file');
+
+  if (!file || typeof file === 'string') {
+    throw new Error('File wajib diunggah.');
+  }
+
+  const originalName = file.name || 'draft.docx';
+  const ext = path.extname(originalName).toLowerCase();
+
+  if (!ALLOWED_DRAFT_EXTENSIONS.includes(ext) && !ALLOWED_DRAFT_MIME_TYPES.includes(file.type)) {
+    throw new Error('Format file tidak didukung. Gunakan PDF, DOC, atau DOCX.');
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  await ensureDraftsDirectory();
+
+  const storedFilename = `${Date.now()}-${sanitizeFilename(originalName)}`;
+  const diskPath = path.join(DRAFTS_DIR, storedFilename);
+
+  await fs.writeFile(diskPath, buffer);
+
+  const filePath = await ensureFile(DRAFTS_FILENAME);
+  const drafts = await readJson(filePath);
+  const newDraft = buildDraftRecord({
+    title,
+    category,
+    filename: originalName,
+    storedFilename,
+  });
+
+  drafts.unshift(newDraft);
+  await writeJson(filePath, drafts);
+  revalidatePath('/modules/bank-draft');
+
+  return { success: true, data: newDraft };
+}
+
+export async function deleteDraft(id) {
+  if (!id) {
+    throw new Error('ID draft wajib diisi.');
+  }
+
+  const filePath = await ensureFile(DRAFTS_FILENAME);
+  const drafts = await readJson(filePath);
+  const target = drafts.find((draft) => draft.id === id);
+
+  if (!target) {
+    throw new Error('Draft tidak ditemukan.');
+  }
+
+  const remaining = drafts.filter((draft) => draft.id !== id);
+  await writeJson(filePath, remaining);
+
+  if (target.fileUrl) {
+    const diskPath = path.join(PUBLIC_DIR, target.fileUrl.replace(/^\//, ''));
+    try {
+      await fs.unlink(diskPath);
+    } catch (error) {
+      console.warn(`Gagal menghapus file draft ${diskPath}:`, error);
+    }
+  }
+
+  revalidatePath('/modules/bank-draft');
+  return { success: true, deletedId: id };
+}
+
+// --- TAMBAHAN UNTUK FITUR PENGGARIS AKTA ---
+import { exec } from 'child_process';
+import util from 'util';
+
+const execPromise = util.promisify(exec);
+
+export async function processGarisAkta(formData) {
+  const file = formData.get('file');
+  const type = formData.get('type'); // 'salinan' atau 'minuta'
+
+  if (!file) return { success: false, message: "File tidak ditemukan" };
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const timestamp = Date.now();
+  const cleanName = file.name.replace(/[^a-zA-Z0-9]/g, '_');
+  const inputFileName = `input_${timestamp}_${cleanName}.pdf`;
+
+  const uploadDir = path.join(process.cwd(), 'public', 'uploads');
+  const inputPath = path.join(uploadDir, inputFileName);
+
+  // Pastikan folder ada
+  try {
+    await fs.mkdir(uploadDir, { recursive: true });
+    await fs.writeFile(inputPath, buffer);
+  } catch (err) {
+    console.error("Error saving file:", err);
+    return { success: false, message: "Gagal menyimpan file upload" };
+  }
+
+  const scriptPath = path.join(process.cwd(), 'scripts', 'ToolGarisAktaNot.py');
+  const outputFileName = `${type.toUpperCase()}_${cleanName.replace('_pdf', '')}.pdf`;
+  const outputPath = path.join(uploadDir, outputFileName);
+
+  const command = `python "${scriptPath}" "${inputPath}" "${outputPath}" --type ${type}`;
+
+  try {
+    console.log("Executing Python:", command);
+    const { stdout, stderr } = await execPromise(command);
+
+    console.log("Python Output:", stdout);
+    if (stderr) console.error("Python Error:", stderr);
+
+    return {
+      success: true,
+      fileUrl: `/uploads/${outputFileName}`,
+      fileName: outputFileName
+    };
+
+  } catch (error) {
+    console.error("Execution Failed:", error);
+    return { success: false, message: "Gagal memproses garis akta. Pastikan Python terinstall." };
+  }
+}
+
+// ... existing code ...
+
+// --- FUNCTION UNTUK TIMELINE PEKERJAAN ---
+
+export async function getJobs() {
+  const filePath = await ensureFile('tracking-pekerjaan.json');
+  return readJson(filePath);
+}
+
+export async function saveJob(jobData) {
+  const filePath = await ensureFile('tracking-pekerjaan.json');
+  const jobs = await readJson(filePath);
+
+  const existingIndex = jobs.findIndex(j => j.id === jobData.id);
+
+  if (existingIndex > -1) {
+    // Update existing
+    jobs[existingIndex] = { ...jobs[existingIndex], ...jobData };
+  } else {
+    // Create new
+    const newJob = {
+      id: `JOB-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      history: [], // Init empty history for new job
+      ...jobData
+    };
+    jobs.unshift(newJob); // Add to top
+  }
+
+  await writeJson(filePath, jobs);
+  return { success: true };
+}
+
+export async function deleteJob(id) {
+  const filePath = await ensureFile('tracking-pekerjaan.json');
+  let jobs = await readJson(filePath);
+  jobs = jobs.filter(j => j.id !== id);
+  await writeJson(filePath, jobs);
+  return { success: true };
+}
+
+// Helper khusus untuk menambah/edit history item tanpa mengirim seluruh objek job
+export async function saveTimelineItem(jobId, historyItem) {
+  const filePath = await ensureFile('tracking-pekerjaan.json');
+  const jobs = await readJson(filePath);
+  const jobIndex = jobs.findIndex(j => j.id === jobId);
+
+  if (jobIndex === -1) throw new Error('Job not found');
+
+  const job = jobs[jobIndex];
+  const historyIndex = job.history.findIndex(h => h.id === historyItem.id);
+
+  if (historyIndex > -1) {
+    // Update existing history item
+    job.history[historyIndex] = { ...job.history[historyIndex], ...historyItem };
+  } else {
+    // Add new history item
+    const newItem = {
+      id: `h${Date.now()}`,
+      ...historyItem
+    };
+    job.history.push(newItem);
+  }
+
+  // Sort history by date descending (newest first) or ascending depending on preference
+  // Here we keep it flexible, usually UI sorts it.
+
+  jobs[jobIndex] = job;
+  await writeJson(filePath, jobs);
+  return { success: true };
+}
+
+export async function deleteTimelineItem(jobId, historyId) {
+  const filePath = await ensureFile('tracking-pekerjaan.json');
+  const jobs = await readJson(filePath);
+  const jobIndex = jobs.findIndex(j => j.id === jobId);
+
+  if (jobIndex === -1) throw new Error('Job not found');
+
+  jobs[jobIndex].history = jobs[jobIndex].history.filter(h => h.id !== historyId);
+
+  await writeJson(filePath, jobs);
+  return { success: true };
+}
+
+// --- FUNCTION UNTUK WA FORMS ---
+
+export async function getWaForms() {
+  const filePath = await ensureFile('whatsapp-forms.json');
+  return readJson(filePath);
+}
+
+export async function saveWaForm(formData) {
+  const filePath = await ensureFile('whatsapp-forms.json');
+  const forms = await readJson(filePath);
+
+  const existingIndex = forms.findIndex(f => f.id === formData.id);
+
+  // Pastikan ada folderId, jika tidak set ke 'uncategorized'
+  const dataToSave = {
+    ...formData,
+    folderId: formData.folderId || 'uncategorized'
+  };
+
+  if (existingIndex > -1) {
+    // Update existing
+    forms[existingIndex] = {
+      ...forms[existingIndex],
+      ...dataToSave,
+      lastUpdated: new Date().toISOString()
+    };
+  } else {
+    // Create new
+    const newForm = {
+      id: `WAF-${Date.now()}`,
+      lastUpdated: new Date().toISOString(),
+      ...dataToSave
+    };
+    forms.unshift(newForm); // Add to top
+  }
+
+  await writeJson(filePath, forms);
+  return { success: true };
+}
+
+export async function deleteWaForm(id) {
+  const filePath = await ensureFile('whatsapp-forms.json');
+  let forms = await readJson(filePath);
+  forms = forms.filter(f => f.id !== id);
+  await writeJson(filePath, forms);
+  return { success: true };
+}
+
+export async function getWaFolders() {
+  // Folder default jika file belum ada
+  const defaultFolders = [
+    { id: 'uncategorized', name: 'Tanpa Kategori', isSystem: true }
+  ];
+  const filePath = await ensureFile('whatsapp-folders.json', defaultFolders);
+  return readJson(filePath);
+}
+
+export async function saveWaFolder(folderData) {
+  const filePath = await ensureFile('whatsapp-folders.json');
+  const folders = await readJson(filePath);
+
+  if (folderData.id) {
+    // Update Folder
+    const index = folders.findIndex(f => f.id === folderData.id);
+    if (index !== -1) {
+      folders[index] = { ...folders[index], ...folderData };
+    }
+  } else {
+    // Create New Folder
+    const newFolder = {
+      id: `FLD-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      ...folderData
+    };
+    folders.push(newFolder);
+  }
+
+  await writeJson(filePath, folders);
+  return { success: true };
+}
+
+export async function deleteWaFolder(id) {
+  const filePath = await ensureFile('whatsapp-folders.json');
+  let folders = await readJson(filePath);
+
+  // Jangan biarkan menghapus folder default
+  if (id === 'uncategorized') return { success: false, message: "Folder default tidak bisa dihapus." };
+
+  folders = folders.filter(f => f.id !== id);
+  await writeJson(filePath, folders);
+
+  // Pindahkan semua form di folder ini ke 'uncategorized'
+  const formsPath = await ensureFile('whatsapp-forms.json');
+  let forms = await readJson(formsPath);
+  let hasChanges = false;
+
+  forms = forms.map(f => {
+    if (f.folderId === id) {
+      hasChanges = true;
+      return { ...f, folderId: 'uncategorized' };
+    }
+    return f;
+  });
+
+  if (hasChanges) {
+    await writeJson(formsPath, forms);
+  }
+
+  return { success: true };
+}
+
+// --- CDD KORPORASI ACTIONS ---
+
+const cddKorporasiFile = path.join(process.cwd(), 'data', 'cdd-korporasi.json')
+
+export async function getCDDKorporasiList() {
+  try {
+    const data = await fs.readFile(cddKorporasiFile, 'utf8')
+    return JSON.parse(data)
+  } catch (error) {
+    return []
+  }
+}
+
+export async function saveCDDKorporasi(data) {
+  try {
+    const currentData = await getCDDKorporasiList()
+    const index = currentData.findIndex((item) => item.id === data.id)
+
+    if (index !== -1) {
+      currentData[index] = data
+    } else {
+      currentData.push(data)
+    }
+
+    await fs.writeFile(cddKorporasiFile, JSON.stringify(currentData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error saving CDD Korporasi:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function deleteCDDKorporasi(id) {
+  try {
+    const currentData = await getCDDKorporasiList()
+    const newData = currentData.filter((item) => item.id !== id)
+    await fs.writeFile(cddKorporasiFile, JSON.stringify(newData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error deleting CDD Korporasi:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+// --- CDD PERORANGAN ACTIONS ---
+const cddFile = path.join(process.cwd(), 'data', 'cdd-perorangan.json')
+
+export async function getCDDList() {
+  try {
+    const data = await fs.readFile(cddFile, 'utf8')
+    return JSON.parse(data)
+  } catch (error) {
+    // If file doesn't exist, return empty array
+    return []
+  }
+}
+
+export async function saveCDD(data) {
+  try {
+    const currentData = await getCDDList()
+    const index = currentData.findIndex((item) => item.id === data.id)
+
+    if (index !== -1) {
+      currentData[index] = data
+    } else {
+      currentData.push(data)
+    }
+
+    await fs.writeFile(cddFile, JSON.stringify(currentData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error saving CDD:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function deleteCDD(id) {
+  try {
+    const currentData = await getCDDList()
+    const newData = currentData.filter((item) => item.id !== id)
+    await fs.writeFile(cddFile, JSON.stringify(newData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error deleting CDD:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+// --- CLIENT ACCOUNTS STORAGE ACTIONS ---
+
+const clientAccountsFile = path.join(process.cwd(), 'data', 'client-accounts.json')
+
+export async function getClientAccounts() {
+  try {
+    const data = await fs.readFile(clientAccountsFile, 'utf8')
+    return JSON.parse(data)
+  } catch (error) {
+    return []
+  }
+}
+
+export async function saveClientAccount(data) {
+  try {
+    const currentData = await getClientAccounts()
+    const index = currentData.findIndex((item) => item.id === data.id)
+
+    if (index !== -1) {
+      currentData[index] = data
+    } else {
+      currentData.push(data)
+    }
+
+    await fs.writeFile(clientAccountsFile, JSON.stringify(currentData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error saving client account:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function deleteClientAccount(id) {
+  try {
+    const currentData = await getClientAccounts()
+    const newData = currentData.filter((item) => item.id !== id)
+    await fs.writeFile(clientAccountsFile, JSON.stringify(newData, null, 2))
+    return { success: true }
+  } catch (error) {
+    console.error('Error deleting client account:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+
+const serahTerimaFile = path.join(process.cwd(), 'data', 'serah-terima.json')
+
+export async function getSerahTerimaList() {
+  try {
+    const data = await fs.readFile(serahTerimaFile, 'utf8')
+    const parsed = JSON.parse(data)
+    return parsed.sort((a, b) => new Date(b.handoverDate || b.createdAt) - new Date(a.handoverDate || a.createdAt))
+  } catch (error) {
+    return []
+  }
+}
+
+
+
+export async function deleteSerahTerima(id) {
+  try {
+    const currentData = await getSerahTerimaList()
+    const newData = currentData.filter((item) => item.id !== id)
+    await fs.writeFile(serahTerimaFile, JSON.stringify(newData, null, 2))
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+// --- GLOBAL HISTORY ACTIONS (Fitur Baru) ---
+export async function getGlobalHistory() {
+  const files = [
+    { name: 'invoices.json', type: 'invoice', label: 'Invoice' },
+    { name: 'serah-terima.json', type: 'serah-terima', label: 'Tanda Terima' },
+    { name: 'daftar-hadir.json', type: 'daftar-hadir', label: 'Daftar Hadir' },
+    { name: 'cover-akta.json', type: 'cover-akta', label: 'Cover Akta' },
+    { name: 'cdd-perorangan.json', type: 'cdd-perorangan', label: 'CDD Perorangan' },
+    { name: 'cdd-korporasi.json', type: 'cdd-korporasi', label: 'CDD Korporasi' },
+  ];
+
+  let allDocs = [];
+
+  for (const file of files) {
+    try {
+      const filePath = path.join(process.cwd(), 'data', file.name);
+      // Cek apakah file ada sebelum baca
+      try {
+        await fs.access(filePath);
+      } catch {
+        continue; // Skip jika file belum dibuat
+      }
+
+
+      const fileContent = await fs.readFile(filePath, 'utf8');
+      const data = JSON.parse(fileContent);
+
+      const normalized = data.map(item => ({
+        id: item.id,
+        originalId: item.id,
+        type: file.type,
+        typeLabel: file.label,
+        // Normalisasi tanggal dari berbagai format field
+        date: item.date || item.createdAt || item.handoverDate || item.tanggal || item.tglTandaTangan || new Date().toISOString(),
+        // Normalisasi judul dari berbagai format field
+        title: item.clientName || item.namaLengkap || item.namaKorporasi || item.receiver?.name || item.nomorAkta || item.judul || 'Dokumen Tanpa Judul',
+        // Simpan raw data untuk dirender ulang
+        data: item
+      }));
+
+      allDocs = [...allDocs, ...normalized];
+    } catch (error) {
+      console.error(`Error reading ${file.name}:`, error);
+      continue;
+    }
+  }
+
+  // Sort dari yang paling baru
+  return allDocs.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+// --- WEBFORM ACTIONS ---
+
+export async function getWebForms() {
+  const filePath = await ensureFile('webforms.json');
+  const data = await readJson(filePath);
+  return data.sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
+}
+
+export async function getWebFormById(id) {
+  const filePath = await ensureFile('webforms.json');
+  const forms = await readJson(filePath);
+  return forms.find(f => f.id === id) || null;
+}
+
+export async function saveWebForm(formData) {
+  const filePath = await ensureFile('webforms.json');
+  const forms = await readJson(filePath);
+
+  const existingIndex = forms.findIndex(f => f.id === formData.id);
+
+  if (existingIndex > -1) {
+    // Update existing
+    forms[existingIndex] = {
+      ...forms[existingIndex],
+      ...formData,
+      updatedAt: new Date().toISOString()
+    };
+  } else {
+    // Create new
+    const newForm = {
+      id: `WF-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'draft',
+      ...formData
+    };
+    forms.unshift(newForm);
+  }
+
+  await writeJson(filePath, forms);
+  return { success: true };
+}
+
+export async function deleteWebForm(id) {
+  const filePath = await ensureFile('webforms.json');
+  let forms = await readJson(filePath);
+  forms = forms.filter(f => f.id !== id);
+  await writeJson(filePath, forms);
+  return { success: true };
+}
